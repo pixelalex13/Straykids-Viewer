@@ -3,7 +3,8 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-<title>SKZ Full Viewer</title>
+<link rel="icon" type="image/x-icon" href="/images/favicon.ico">
+<title>Stray Kids ☆ Viewer</title>
 <link href="https://fonts.googleapis.com/css2?family=Bebas+Neue&family=Noto+Sans+KR:wght@300;400;700&display=swap" rel="stylesheet">
 <style>
 :root{
@@ -114,7 +115,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
 .play-icon svg{width:13px;fill:white;margin-left:2px;}
 .video-card:hover .play-icon,.video-card.active .play-icon{opacity:1;}
 
-/* Heart button — ALWAYS visible on mobile */
+/* Heart button */
 .heart-btn{
   position:absolute;bottom:5px;right:5px;
   width:32px;height:32px;
@@ -230,7 +231,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
     <div class="header-logo">SKZ</div>
     <div class="ch-tabs">
       <button class="ch-tab active" onclick="switchChannel('all',this)">Alle</button>
-      <button class="ch-tab" onclick="switchChannel('main',this)">🌍 Main</button>
+      <button class="ch-tab" onclick="switchChannel('main',this)">🌍 SKZ</button>
       <button class="ch-tab" onclick="switchChannel('japan',this)">🇯🇵 Japan</button>
       <button class="ch-tab" onclick="switchChannel('jyp',this)">🎵 JYP</button>
     </div>
@@ -242,13 +243,15 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
 
   <div class="filter-bar">
     <span class="filter-label">Filter</span>
-    <button class="f-btn" id="btn-heart" onclick="toggleHeartFilter()">❤️ Geherzt</button>
+    <button class="f-btn" id="btn-heart" onclick="toggleHeartFilter()">❤️ Mag Ich</button>
     <div class="filter-sep"></div>
     <button class="f-btn type-active" id="btn-all"    onclick="setTypeFilter('all',this)">Alle</button>
-    <button class="f-btn"             id="btn-shorts" onclick="setTypeFilter('shorts',this)">📱 Shorts</button>
     <button class="f-btn"             id="btn-videos" onclick="setTypeFilter('videos',this)">🎬 Videos</button>
+    <button class="f-btn"             id="btn-shorts" onclick="setTypeFilter('shorts',this)">📱 Shorts</button>
     <div class="filter-sep" id="sv-sep" style="display:none;"></div>
     <button class="f-btn sv-btn" id="btn-sv" style="display:none;" onclick="openShortsViewer(0)">▶ Shorts Viewer</button>
+    <div style="flex:1;"></div>
+    <button class="f-btn" id="btn-reload" onclick="clearCacheAndReload()" title="Cache leeren und alle Videos neu laden" style="color:var(--muted);font-size:0.68rem;">🔄 Neu laden</button>
   </div>
 
   <div class="content">
@@ -327,14 +330,106 @@ let renderTimer=null;
 
 // Shorts viewer
 let svList=[],svIndex=0,svAnimating=false;
-let svAutoTimer=null,svProgressTimer=null,svProgressStart=null,svCurrentDuration=0;
+let svAutoTimer=null,svActiveVideoId=null;
+
+// ── CACHE ──
+const CACHE_VERSION=2;
+
+function cacheKey(ch){return`skz_cache_v${CACHE_VERSION}_${ch}`;}
+
+function saveCache(ch){
+  try{
+    localStorage.setItem(cacheKey(ch),JSON.stringify({videos:state[ch].videos,savedAt:Date.now()}));
+  }catch(e){
+    // localStorage full — clear old cache and try once more
+    try{['main','japan','jyp'].forEach(c=>localStorage.removeItem(cacheKey(c)));
+    localStorage.setItem(cacheKey(ch),JSON.stringify({videos:state[ch].videos,savedAt:Date.now()}));}
+    catch(_){}
+  }
+}
+
+function loadCache(ch){
+  try{
+    const raw=localStorage.getItem(cacheKey(ch));
+    if(!raw)return false;
+    const {videos}=JSON.parse(raw);
+    if(!videos||!videos.length)return false;
+    state[ch].videos=videos;
+    state[ch].done=true;
+    return true;
+  }catch(_){return false;}
+}
 
 window.onload=()=>{
   document.getElementById('app').style.display='flex';
-  fetchChannel('main');fetchChannel('japan');fetchChannel('jyp');
+
+  // Load all caches first so grid shows instantly
+  const hasCacheMain =loadCache('main');
+  const hasCacheJapan=loadCache('japan');
+  const hasCacheJyp  =loadCache('jyp');
+
+  if(hasCacheMain||hasCacheJapan||hasCacheJyp){
+    rebuildAll();
+    rerender(DISPLAY_BATCH);
+    updateCount();
+    document.getElementById('load-text').textContent='Prüfe auf neue Videos…';
+  }
+
+  fetchNewOnly('main',  hasCacheMain);
+  fetchNewOnly('japan', hasCacheJapan);
+  fetchNewOnly('jyp',   hasCacheJyp);
 };
 
-// ── FETCH ──
+// ── FETCH NEW ONLY ──
+async function fetchNewOnly(ch, hadCache){
+  if(!hadCache){
+    state[ch].done=false;
+    fetchChannel(ch);
+    return;
+  }
+  const s=state[ch];
+  const url=new URL('https://www.googleapis.com/youtube/v3/playlistItems');
+  url.searchParams.set('part','snippet');
+  url.searchParams.set('playlistId',CHANNELS[ch].playlist);
+  url.searchParams.set('maxResults',PAGE_SIZE);
+  url.searchParams.set('key',API_KEY);
+  try{
+    const res=await fetch(url),data=await res.json();
+    if(data.error){updateStatusFromCache();return;}
+    const existingIds=new Set(s.videos.map(v=>v.id));
+    const raw=(data.items||[])
+      .filter(i=>i.snippet.resourceId?.kind==='youtube#video')
+      .map(i=>({id:i.snippet.resourceId.videoId,title:i.snippet.title,date:(i.snippet.publishedAt||'').slice(0,10),thumb:(i.snippet.thumbnails?.medium||i.snippet.thumbnails?.default)?.url||'',channel:ch,isShort:null,duration:0}))
+      .filter(v=>v.title!=='Private video'&&v.title!=='Deleted video');
+    const newItems=raw.filter(v=>!existingIds.has(v.id));
+    if(newItems.length>0){
+      const ids=newItems.map(v=>v.id).join(',');
+      try{
+        const du=new URL('https://www.googleapis.com/youtube/v3/videos');
+        du.searchParams.set('part','contentDetails');du.searchParams.set('id',ids);du.searchParams.set('key',API_KEY);
+        const dr=await fetch(du),dd=await dr.json();
+        const dm={};(dd.items||[]).forEach(x=>dm[x.id]=parseDuration(x.contentDetails.duration));
+        newItems.forEach(v=>{v.duration=dm[v.id]??0;v.isShort=v.duration>0&&v.duration<=60;});
+      }catch(_){newItems.forEach(v=>{v.isShort=false;});}
+      s.videos.unshift(...newItems);
+      saveCache(ch);
+      rebuildAll();
+      clearTimeout(renderTimer);
+      renderTimer=setTimeout(()=>rerender(Math.max(displayedCount,DISPLAY_BATCH)),80);
+    }
+    updateStatusFromCache();
+  }catch(e){updateStatusFromCache();}
+}
+
+function updateStatusFromCache(){
+  const total=state.main.videos.length+state.japan.videos.length+state.jyp.videos.length;
+  const el=document.getElementById('load-text');
+  el.textContent=`${total} Videos geladen.`;
+  setTimeout(()=>document.getElementById('load-banner').style.display='none',1200);
+  updateCount();
+}
+
+// ── FULL FETCH ──
 async function fetchChannel(ch){
   const s=state[ch];if(s.fetching||s.done)return;s.fetching=true;
   const url=new URL('https://www.googleapis.com/youtube/v3/playlistItems');
@@ -347,7 +442,6 @@ async function fetchChannel(ch){
     const raw=(data.items||[]).filter(i=>i.snippet.resourceId?.kind==='youtube#video')
       .map(i=>({id:i.snippet.resourceId.videoId,title:i.snippet.title,date:(i.snippet.publishedAt||'').slice(0,10),thumb:(i.snippet.thumbnails?.medium||i.snippet.thumbnails?.default)?.url||'',channel:ch,isShort:null,duration:0}))
       .filter(v=>v.title!=='Private video'&&v.title!=='Deleted video');
-    // Fetch durations
     const ids=raw.map(v=>v.id).join(',');
     if(ids){
       const du=new URL('https://www.googleapis.com/youtube/v3/videos');
@@ -358,7 +452,7 @@ async function fetchChannel(ch){
         raw.forEach(v=>{v.duration=dm[v.id]??0;v.isShort=v.duration>0&&v.duration<=60;});
       }catch(_){raw.forEach(v=>{v.isShort=false;});}
     }
-    s.videos.push(...raw);s.nextToken=data.nextPageToken||null;if(!s.nextToken)s.done=true;
+    s.videos.push(...raw);s.nextToken=data.nextPageToken||null;if(!s.nextToken){s.done=true;saveCache(ch);}
     rebuildAll();updateStatus();
     clearTimeout(renderTimer);renderTimer=setTimeout(()=>rerender(Math.max(displayedCount,DISPLAY_BATCH)),80);
     s.fetching=false;if(!s.done)setTimeout(()=>fetchChannel(ch),300);
@@ -387,6 +481,7 @@ function rerender(upTo){
   displayedCount=end;updateLoadMore();
   document.getElementById('no-results').style.display=filteredVideos.length===0?'block':'none';
   updateSVButton();
+  updateFilterCounts();
 }
 function renderMore(){
   buildFiltered();const grid=document.getElementById('video-grid');
@@ -397,7 +492,43 @@ function renderMore(){
 function updateLoadMore(){const has=displayedCount<filteredVideos.length;const w=document.getElementById('load-more-wrap');w.style.display=has?'block':'none';if(has)w.querySelector('button').textContent=`Mehr laden (${filteredVideos.length-displayedCount} weitere)`;}
 function updateStatus(){const done=state.main.done&&state.japan.done&&state.jyp.done;const tot=state.main.videos.length+state.japan.videos.length+state.jyp.videos.length;document.getElementById('load-text').textContent=done?`Alle ${tot} Videos geladen.`:`${tot} Videos geladen…`;if(done)setTimeout(()=>document.getElementById('load-banner').style.display='none',1500);updateCount();}
 function updateCount(){const n=activeChannel==='all'?allVideos.length:activeChannel==='main'?state.main.videos.length:activeChannel==='japan'?state.japan.videos.length:state.jyp.videos.length;const loading=activeChannel==='all'?!(state.main.done&&state.japan.done&&state.jyp.done):activeChannel==='main'?!state.main.done:activeChannel==='japan'?!state.japan.done:!state.jyp.done;document.getElementById('header-count').textContent=n+' Videos'+(loading?' (lädt…)':'');}
-function updateSVButton(){const sh=filteredVideos.filter(v=>v.isShort===true);const show=sh.length>0;document.getElementById('btn-sv').style.display=show?'inline-block':'none';document.getElementById('sv-sep').style.display=show?'block':'none';if(show)document.getElementById('btn-sv').textContent=`▶ Shorts Viewer (${sh.length})`;}
+function updateSVButton(){
+  let src=activeChannel==='all'?allVideos:activeChannel==='main'?state.main.videos:activeChannel==='japan'?state.japan.videos:state.jyp.videos;
+  if(heartFilter)src=src.filter(v=>hearts.has(v.id));
+  const sh=src.filter(v=>v.isShort===true);
+  const show=sh.length>0;
+  document.getElementById('btn-sv').style.display=show?'inline-block':'none';
+  document.getElementById('sv-sep').style.display=show?'block':'none';
+  if(show)document.getElementById('btn-sv').textContent='▶ Shorts Viewer';
+}
+function updateFilterCounts(){
+  let src=activeChannel==='all'?allVideos:activeChannel==='main'?state.main.videos:activeChannel==='japan'?state.japan.videos:state.jyp.videos;
+  if(heartFilter)src=src.filter(v=>hearts.has(v.id));
+  const q=document.getElementById('search-input').value.trim().toLowerCase();
+  if(q)src=src.filter(v=>v.title.toLowerCase().includes(q));
+  const shorts=src.filter(v=>v.isShort===true).length;
+  const videos=src.filter(v=>v.isShort===false).length;
+  document.getElementById('btn-shorts').textContent=`📱 Shorts${shorts?` (${shorts})`:''}`;
+  document.getElementById('btn-videos').textContent=`🎬 Videos${videos?` (${videos})`:''}`;
+}
+function clearCacheAndReload(){
+  const btn=document.getElementById('btn-reload');
+  btn.textContent='⏳ Wird geladen…';btn.disabled=true;
+  ['main','japan','jyp'].forEach(ch=>{
+    localStorage.removeItem(cacheKey(ch));
+    state[ch].videos=[];state[ch].nextToken=null;state[ch].done=false;state[ch].fetching=false;
+  });
+  allVideos=[];filteredVideos=[];displayedCount=0;
+  document.getElementById('video-grid').innerHTML='';
+  document.getElementById('load-banner').style.display='flex';
+  document.getElementById('load-text').textContent='Kanäle werden geladen…';
+  fetchChannel('main');fetchChannel('japan');fetchChannel('jyp');
+  const check=setInterval(()=>{
+    if(state.main.done&&state.japan.done&&state.jyp.done){
+      btn.textContent='🔄 Neu laden';btn.disabled=false;clearInterval(check);
+    }
+  },1000);
+}
 
 // ── NAV ──
 function switchChannel(ch,btn){activeChannel=ch;document.querySelectorAll('.ch-tab').forEach(b=>b.classList.remove('active'));btn.classList.add('active');displayedCount=0;rerender(DISPLAY_BATCH);updateCount();}
@@ -409,7 +540,7 @@ function onFilter(){displayedCount=0;rerender(DISPLAY_BATCH);}
 function makeCard(v){
   const card=document.createElement('div');card.className='video-card'+(v.id===activeId?' active':'');card.id='card-'+v.id;
   const bc=v.channel==='japan'?'#ff9d00':v.channel==='jyp'?'#a78bfa':'#ff3c5f';
-  const bt=v.channel==='japan'?'🇯🇵 JP':v.channel==='jyp'?'JYP':'SKZ';
+  const bt=v.channel==='japan'?'JP':v.channel==='jyp'?'JYP':'SKZ';
   const badge=`<span style="position:absolute;top:5px;left:5px;background:rgba(0,0,0,0.75);color:${bc};font-size:0.58rem;font-weight:700;padding:1px 5px;border-radius:3px;">${bt}</span>`;
   const sb=v.isShort?`<span style="position:absolute;bottom:5px;left:5px;background:rgba(0,0,0,0.75);color:#fff;font-size:0.55rem;font-weight:700;padding:1px 5px;border-radius:3px;">SHORT</span>`:'';
   card.innerHTML=`<div class="thumb-wrap"><img src="${v.thumb}" alt="" loading="lazy">${badge}${sb}<button class="heart-btn${hearts.has(v.id)?' hearted':''}" title="Herzen">♥</button><div class="play-btn"><div class="play-icon"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div></div><div class="video-meta"><h4>${escHtml(v.title)}</h4><span class="date">${formatDate(v.date)}</span></div>`;
@@ -441,7 +572,11 @@ function playVideo(v){
   document.getElementById('player-title').textContent=v.title;document.getElementById('player-date').textContent=formatDate(v.date);
   syncPlayerHeartBtn();document.getElementById('player-pane').classList.add('open');
 }
-function closePlayer(){document.getElementById('player-pane').classList.remove('open');document.getElementById('player-iframe').src='';activeId=null;document.querySelectorAll('.video-card.active').forEach(c=>c.classList.remove('active'));}
+function closePlayer(){
+  document.getElementById('player-pane').classList.remove('open');
+  document.getElementById('player-iframe').src='';
+  activeId=null;document.querySelectorAll('.video-card.active').forEach(c=>c.classList.remove('active'));
+}
 
 // ══════════════════════════════════════
 // SHORTS VIEWER
@@ -457,7 +592,6 @@ function openShortsViewer(startIndex,list){
   document.addEventListener('keydown',svOnKey);
 }
 function closeShortsViewer(){
-  svClearAutoplay();
   document.getElementById('sv-overlay').classList.remove('open');
   document.getElementById('sv-iframe').src='';
   document.body.style.overflow='';
@@ -466,22 +600,18 @@ function closeShortsViewer(){
 
 function svLoadVideo(idx,dir){
   const v=svList[idx];if(!v)return;
-  svClearAutoplay();
+  svActiveVideoId=v.id;
   const box=document.getElementById('sv-iframe-box');
   const iframe=document.getElementById('sv-iframe');
 
   function doLoad(){
-    // playsinline=1 is essential for iOS Safari (no fullscreen hijack)
-    iframe.src=`https://www.youtube-nocookie.com/embed/${v.id}?autoplay=1&rel=0&playsinline=1`;
+    iframe.src=`https://www.youtube-nocookie.com/embed/${v.id}?autoplay=1&rel=0&playsinline=1&enablejsapi=1`;
     document.getElementById('sv-title').textContent=v.title;
     document.getElementById('sv-date').textContent=formatDate(v.date);
     document.getElementById('sv-counter').textContent=`${idx+1} / ${svList.length}`;
     document.getElementById('sv-prev').disabled=idx===0;
     document.getElementById('sv-next').disabled=idx===svList.length-1;
     syncSVHeartBtn();
-    // Autoplay: use video duration, fall back to 55s for unknown
-    const dur=(v.duration>0?v.duration:55)*1000;
-    svStartAutoplay(dur);
   }
 
   if(dir!==null){
@@ -503,18 +633,6 @@ function svGo(dir){
   setTimeout(()=>svAnimating=false,300);
 }
 
-
-// ── Autoplay ──
-function svStartAutoplay(durationMs){
-  svAutoTimer=setTimeout(()=>{
-    if(svIndex<svList.length-1)svGo(1);
-  },durationMs);
-}
-function svClearAutoplay(){
-  clearTimeout(svAutoTimer);svAutoTimer=null;
-}
-
-
 function svToggleHeart(){const v=svList[svIndex];if(!v)return;toggleHeart(v.id,document.querySelector('#card-'+v.id+' .heart-btn'));syncSVHeartBtn();}
 function syncSVHeartBtn(){const v=svList[svIndex];if(!v)return;document.getElementById('sv-heart-btn').classList.toggle('hearted',hearts.has(v.id));}
 
@@ -529,3 +647,4 @@ function formatDate(d){if(!d)return'';const[y,m,day]=d.split('-');const mo=['Jan
 </script>
 </body>
 </html>
+<! by pixelalex13 --> 
