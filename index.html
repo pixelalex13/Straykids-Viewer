@@ -5,7 +5,7 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="apple-mobile-web-app-title" content="SKZ">
+<meta name="apple-mobile-web-app-title" content="SKZ ☆ Viewer">
 <meta name="mobile-web-app-capable" content="yes">
 <link rel="apple-touch-icon" href="/images/favicon.ico">
 <link rel="icon" type="image/x-icon" href="/images/favicon.ico">
@@ -88,7 +88,7 @@ body{background:var(--bg);color:var(--text);font-family:'Noto Sans KR',sans-seri
 .play-icon svg{width:13px;fill:white;margin-left:2px;}
 .video-card:hover .play-icon,.video-card.active .play-icon{opacity:1;}
 
-/* Heart indicator — static badge, only visible when hearted */
+/* Heart indicator */
 .heart-indicator{
   position:absolute;bottom:5px;right:5px;
   width:24px;height:24px;
@@ -402,7 +402,6 @@ function makeCard(v){
   const bt=v.channel==='japan'?'JP':v.channel==='jyp'?'JYP':'SKZ';
   const badge=`<span style="position:absolute;top:5px;left:5px;background:rgba(0,0,0,0.75);color:${bc};font-size:0.58rem;font-weight:700;padding:1px 5px;border-radius:3px;">${bt}</span>`;
   const sb=v.isShort?`<span style="position:absolute;bottom:5px;left:5px;background:rgba(0,0,0,0.75);color:#fff;font-size:0.55rem;font-weight:700;padding:1px 5px;border-radius:3px;">SHORT</span>`:'';
-  // Heart indicator — visible only when hearted, not interactive
   const hi=`<div class="heart-indicator${hearts.has(v.id)?' hearted':''}">♥</div>`;
   card.innerHTML=`<div class="thumb-wrap"><img src="${v.thumb}" alt="" loading="lazy">${badge}${sb}${hi}<div class="play-btn"><div class="play-icon"><svg viewBox="0 0 24 24"><path d="M8 5v14l11-7z"/></svg></div></div></div><div class="video-meta"><h4>${escHtml(v.title)}</h4><span class="date">${formatDate(v.date)}</span></div>`;
   card.addEventListener('click',()=>{
@@ -417,7 +416,6 @@ function toggleHeart(id){
   const now=!hearts.has(id);
   if(now)hearts.add(id);else hearts.delete(id);
   localStorage.setItem('skz_hearts',JSON.stringify([...hearts]));
-  // Update indicator on card
   const indicator=document.querySelector('#card-'+id+' .heart-indicator');
   if(indicator)indicator.classList.toggle('hearted',now);
   if(id===activeId)syncPlayerHeartBtn();
